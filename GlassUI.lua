@@ -26,7 +26,7 @@
 local GlassUI = {}
 GlassUI.__index = GlassUI
 
-GlassUI.Version = "1.0.0"
+GlassUI.Version = "2.0.0"
 
 --========================================================
 -- SERVICES
@@ -1898,6 +1898,534 @@ function GlassUI:CreateWindow(userOptions)
     end
 
     return window
+end
+
+--========================================================
+-- GLASSUI 2.0 EXTENSIONS
+-- Additive components and runtime theme/material controls.
+--========================================================
+
+GlassUI.Materials = {
+    Graphite = { transparency = 0.00, stroke = 0.00 },
+    Liquid = { transparency = 0.10, stroke = 0.08 },
+    FullGlass = { transparency = 0.23, stroke = 0.20 },
+    Solid = { transparency = -0.10, stroke = -0.10 },
+}
+
+local function extensionColor(theme, key, fallback)
+    return (theme and theme[key]) or fallback
+end
+
+local function attachExtensions(window, theme)
+    local oldCreateTab = window.CreateTab
+
+    function window:SetTheme(themeInput)
+        local nextTheme
+        if type(themeInput) == "table" then
+            nextTheme = mergeTable(GlassUI.Themes.Graphite, themeInput)
+        else
+            nextTheme = copyTable(GlassUI.Themes[themeInput] or GlassUI.Themes.Graphite)
+        end
+
+        local previous = self._theme or theme
+        local colorMap = {
+            Shell = "Shell", Header = "Header", Content = "Content",
+            Sidebar = "Sidebar", Card = "Card", CardHover = "CardHover",
+            Field = "Field", Text = "Text", Secondary = "Secondary",
+            Muted = "Muted", Accent = "Accent", AccentSurface = "AccentSurface",
+            Green = "Green", Red = "Red", Border = "Border",
+        }
+
+        if self._gui then
+            for _, item in ipairs(self._gui:GetDescendants()) do
+                for oldKey, newKey in pairs(colorMap) do
+                    local oldColor = previous[oldKey]
+                    local newColor = nextTheme[newKey]
+                    if oldColor and newColor then
+                        pcall(function()
+                            if item:IsA("GuiObject") and item.BackgroundColor3 == oldColor then
+                                item.BackgroundColor3 = newColor
+                            end
+                            if item:IsA("TextLabel") or item:IsA("TextButton") or item:IsA("TextBox") then
+                                if item.TextColor3 == oldColor then item.TextColor3 = newColor end
+                            end
+                            if item:IsA("UIStroke") and item.Color == oldColor then
+                                item.Color = newColor
+                            end
+                            if item:IsA("ImageLabel") or item:IsA("ImageButton") then
+                                if item.ImageColor3 == oldColor then item.ImageColor3 = newColor end
+                            end
+                        end)
+                    end
+                end
+            end
+        end
+        self._theme = nextTheme
+        theme = nextTheme
+        return self
+    end
+
+    function window:SetAccent(color)
+        assert(typeof(color) == "Color3", "SetAccent expects a Color3")
+        local nextTheme = copyTable(self._theme or theme)
+        nextTheme.Accent = color
+        self:SetTheme(nextTheme)
+        return self
+    end
+
+    function window:SetMaterial(materialName, strength)
+        local preset = GlassUI.Materials[materialName]
+        assert(preset, "Unknown GlassUI material: " .. tostring(materialName))
+        local delta = preset.transparency
+        if strength ~= nil then
+            delta = delta * math.clamp(tonumber(strength) or 1, 0, 1.5)
+        end
+        self._material = materialName
+        if self._gui then
+            for _, item in ipairs(self._gui:GetDescendants()) do
+                if item:IsA("GuiObject") then
+                    local name = item.Name
+                    local eligible = name == "Shell" or name == "Header" or name == "Body"
+                        or name == "Navigation" or name == "WindowShadow"
+                        or string.sub(name, 1, 8) == "Section_"
+                        or string.sub(name, -3) == "Row"
+                    if eligible then
+                        if item:GetAttribute("GlassBaseTransparency") == nil then
+                            item:SetAttribute("GlassBaseTransparency", item.BackgroundTransparency)
+                        end
+                        local original = item:GetAttribute("GlassBaseTransparency")
+                        item.BackgroundTransparency = math.clamp(original + delta, 0, 0.96)
+                    end
+                elseif item:IsA("UIStroke") then
+                    if item:GetAttribute("GlassBaseTransparency") == nil then
+                        item:SetAttribute("GlassBaseTransparency", item.Transparency)
+                    end
+                    item.Transparency = math.clamp(item:GetAttribute("GlassBaseTransparency") - preset.stroke, 0.12, 1)
+                end
+            end
+        end
+        return self
+    end
+
+    function window:CreateTab(tabName, iconText)
+        local tab = oldCreateTab(self, tabName, iconText)
+        if tab._glassExtensionsAttached then return tab end
+        tab._glassExtensionsAttached = true
+        local oldCreateSection = tab.CreateSection
+
+        function tab:CreateSection(sectionName)
+            local section = oldCreateSection(self, sectionName)
+            if section._glassExtensionsAttached then return section end
+            section._glassExtensionsAttached = true
+
+            local function makeRow(name, height)
+                local row = create("Frame", {
+                    Name = name or "GlassComponentRow",
+                    Size = UDim2.new(1, 0, 0, height or 42),
+                    BackgroundColor3 = (window._theme or theme).Card,
+                    BackgroundTransparency = 0.34,
+                    BorderSizePixel = 0,
+                    LayoutOrder = (function()
+                        section._order = (section._order or 0) + 1
+                        return section._order
+                    end)(),
+                    ZIndex = 7,
+                }, (section._holder or section.Frame or section._frame or section))
+                addCorner(row, 8)
+                addStroke(row, window._theme or theme, 0.91)
+                return row
+            end
+
+            local function addTitle(row, titleText, detailText)
+                local title = makeLabel(row, titleText or "Control", 9, (window._theme or theme).Text, true)
+                title.Position = UDim2.fromOffset(9, detailText and 5 or 0)
+                title.Size = UDim2.new(1, -18, 1, detailText and -15 or 0)
+                if detailText then
+                    local detail = makeLabel(row, detailText, 7, (window._theme or theme).Secondary, false)
+                    detail.Position = UDim2.fromOffset(9, 22)
+                    detail.Size = UDim2.new(1, -18, 0, 13)
+                end
+                return title
+            end
+
+            function section:AddBadge(options)
+                options = type(options) == "table" and options or {Text = tostring(options)}
+                local row = makeRow("BadgeRow", 30)
+                local textValue = tostring(options.Text or "STATUS")
+                local badge = create("TextLabel", {
+                    AnchorPoint = Vector2.new(0, 0.5),
+                    Position = UDim2.new(0, 7, 0.5, 0),
+                    Size = UDim2.fromOffset(options.Width or 96, 20),
+                    BackgroundColor3 = options.Color or (window._theme or theme).AccentSurface,
+                    BackgroundTransparency = 0.12,
+                    Text = textValue,
+                    TextColor3 = options.TextColor or (window._theme or theme).Text,
+                    TextSize = 8, Font = Enum.Font.GothamSemibold,
+                    BorderSizePixel = 0, ZIndex = 9,
+                }, row)
+                addCorner(badge, 7)
+                local control = {Frame = row, Label = badge}
+                function control:SetText(value) badge.Text = tostring(value) end
+                function control:SetColor(value) badge.BackgroundColor3 = value end
+                function control:Destroy() row:Destroy() end
+                return control
+            end
+
+            function section:AddProgressBar(options)
+                options = options or {}
+                local row = makeRow("ProgressRow", options.Height or 54)
+                addTitle(row, options.Name or "Progress", options.Description)
+                local value = math.clamp(tonumber(options.Default) or 0, 0, 100)
+                local track = create("Frame", {
+                    Position = UDim2.new(0, 9, 1, -14),
+                    Size = UDim2.new(1, -18, 0, 5),
+                    BackgroundColor3 = (window._theme or theme).Field,
+                    BorderSizePixel = 0, ZIndex = 8,
+                }, row)
+                addCorner(track, 4)
+                local fill = create("Frame", {
+                    Size = UDim2.new(value / 100, 0, 1, 0),
+                    BackgroundColor3 = (window._theme or theme).Accent,
+                    BorderSizePixel = 0, ZIndex = 9,
+                }, track)
+                addCorner(fill, 4)
+                local control = {Frame = row}
+                function control:SetValue(nextValue)
+                    value = math.clamp(tonumber(nextValue) or 0, 0, 100)
+                    tween(fill, {Size = UDim2.new(value / 100, 0, 1, 0)}, 0.18)
+                end
+                function control:GetValue() return value end
+                function control:Destroy() row:Destroy() end
+                return control
+            end
+
+            function section:AddSearch(options)
+                options = options or {}
+                local row = makeRow("SearchRow", options.Height or 48)
+                local box = create("TextBox", {
+                    Position = UDim2.fromOffset(8, 7),
+                    Size = UDim2.new(1, -16, 1, -14),
+                    BackgroundColor3 = (window._theme or theme).Field,
+                    BackgroundTransparency = 0.08,
+                    Text = tostring(options.Default or ""),
+                    PlaceholderText = options.Placeholder or "Search...",
+                    PlaceholderColor3 = (window._theme or theme).Muted,
+                    TextColor3 = (window._theme or theme).Text,
+                    TextSize = 9, Font = Enum.Font.Gotham,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    ClearTextOnFocus = false, BorderSizePixel = 0, ZIndex = 8,
+                }, row)
+                addCorner(box, 7)
+                create("UIPadding", {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9)}, box)
+                local control = {Frame = row, TextBox = box}
+                function control:SetValue(value, fireCallback)
+                    box.Text = tostring(value or "")
+                    if fireCallback ~= false then safeCallback(options.Callback, box.Text) end
+                end
+                function control:GetValue() return box.Text end
+                box:GetPropertyChangedSignal("Text"):Connect(function()
+                    safeCallback(options.Callback, box.Text)
+                end)
+                function control:Destroy() row:Destroy() end
+                return control
+            end
+
+            function section:AddKeybind(options)
+                options = options or {}
+                local row = makeRow("KeybindRow", 42)
+                addTitle(row, options.Name or "Keybind", options.Description)
+                local keyName = tostring(options.Default or "RightShift")
+                local button = create("TextButton", {
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -8, 0.5, 0),
+                    Size = UDim2.fromOffset(86, 25),
+                    BackgroundColor3 = (window._theme or theme).Field,
+                    Text = keyName, TextColor3 = (window._theme or theme).Text,
+                    TextSize = 8, Font = Enum.Font.GothamSemibold,
+                    AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 9,
+                }, row)
+                addCorner(button, 6)
+                local listening = false
+                local key = Enum.KeyCode[keyName] or Enum.KeyCode.RightShift
+                local control = {Frame = row}
+                local connection
+                button.Activated:Connect(function()
+                    listening = true
+                    button.Text = "Press key..."
+                end)
+                connection = UserInputService.InputBegan:Connect(function(input, processed)
+                    if listening then
+                        if input.UserInputType == Enum.UserInputType.Keyboard then
+                            key = input.KeyCode
+                            keyName = key.Name
+                            button.Text = keyName
+                            listening = false
+                        end
+                    elseif not processed and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == key then
+                        safeCallback(options.Callback, key)
+                    end
+                end)
+                function control:GetValue() return key end
+                function control:SetValue(value)
+                    if typeof(value) == "EnumItem" then key = value else key = Enum.KeyCode[tostring(value)] or key end
+                    keyName = key.Name
+                    button.Text = keyName
+                end
+                function control:Destroy()
+                    if connection then connection:Disconnect() end
+                    row:Destroy()
+                end
+                row.Destroying:Connect(function() if connection then connection:Disconnect() end end)
+                return control
+            end
+
+            function section:AddRangeSlider(options)
+                options = options or {}
+                local row = makeRow("RangeSliderRow", options.Height or 58)
+                local minValue = tonumber(options.Min) or 0
+                local maxValue = tonumber(options.Max) or 100
+                if maxValue <= minValue then maxValue = minValue + 1 end
+                local low = math.clamp(tonumber(options.DefaultMin) or minValue, minValue, maxValue)
+                local high = math.clamp(tonumber(options.DefaultMax) or maxValue, low, maxValue)
+                local title = makeLabel(row, options.Name or "Range", 9, (window._theme or theme).Text, true)
+                title.Position = UDim2.fromOffset(8, 4)
+                title.Size = UDim2.new(1, -16, 0, 14)
+                local valueLabel = makeLabel(row, tostring(low) .. " – " .. tostring(high), 8, (window._theme or theme).Secondary, false)
+                valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+                valueLabel.Position = UDim2.new(0, 8, 0, 4)
+                valueLabel.Size = UDim2.new(1, -16, 0, 14)
+                title.Size = UDim2.new(0.55, -8, 0, 14)
+                local track = create("Frame", {
+                    Position = UDim2.new(0, 10, 1, -17), Size = UDim2.new(1, -20, 0, 6),
+                    BackgroundColor3 = (window._theme or theme).Field, BorderSizePixel = 0, ZIndex = 8,
+                }, row)
+                addCorner(track, 4)
+                local active = create("Frame", {BackgroundColor3 = (window._theme or theme).Accent, BorderSizePixel = 0, ZIndex = 9}, track)
+                addCorner(active, 4)
+                local lowHandle = create("TextButton", {Size = UDim2.fromOffset(14, 14), AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = (window._theme or theme).Text, Text = "", AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 10}, track)
+                local highHandle = lowHandle:Clone()
+                highHandle.Parent = track
+                addCorner(lowHandle, 7); addCorner(highHandle, 7)
+                local function render()
+                    local a = (low - minValue) / (maxValue - minValue)
+                    local b = (high - minValue) / (maxValue - minValue)
+                    lowHandle.Position = UDim2.new(a, 0, 0.5, 0)
+                    highHandle.Position = UDim2.new(b, 0, 0.5, 0)
+                    active.Position = UDim2.new(a, 0, 0, 0)
+                    active.Size = UDim2.new(b - a, 0, 1, 0)
+                    valueLabel.Text = tostring(low) .. " – " .. tostring(high)
+                end
+                local function setFromInput(input, handle)
+                    local relative = math.clamp((input.Position.X - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
+                    local nextValue = minValue + relative * (maxValue - minValue)
+                    local step = tonumber(options.Step) or 1
+                    nextValue = minValue + math.floor((nextValue - minValue) / step + 0.5) * step
+                    if handle == "low" then low = math.clamp(nextValue, minValue, high) else high = math.clamp(nextValue, low, maxValue) end
+                    render()
+                    safeCallback(options.Callback, low, high)
+                end
+                local rangeConnections = {}
+                local function bindHandle(handle, button)
+                    local dragging = false
+                    table.insert(rangeConnections, button.InputBegan:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                            dragging = true
+                            setFromInput(input, handle)
+                        end
+                    end))
+                    table.insert(rangeConnections, UserInputService.InputChanged:Connect(function(input)
+                        if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+                            setFromInput(input, handle)
+                        end
+                    end))
+                    table.insert(rangeConnections, UserInputService.InputEnded:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                            dragging = false
+                        end
+                    end))
+                end
+                bindHandle("low", lowHandle); bindHandle("high", highHandle)
+                local control = {Frame = row}
+                function control:GetValue() return low, high end
+                function control:SetValue(a, b)
+                    low = math.clamp(tonumber(a) or low, minValue, maxValue)
+                    high = math.clamp(tonumber(b) or high, low, maxValue)
+                    render()
+                end
+                function control:Destroy()
+                    for _, connection in ipairs(rangeConnections) do connection:Disconnect() end
+                    table.clear(rangeConnections)
+                    row:Destroy()
+                end
+                row.Destroying:Connect(function()
+                    for _, connection in ipairs(rangeConnections) do connection:Disconnect() end
+                    table.clear(rangeConnections)
+                end)
+                render()
+                return control
+            end
+
+            function section:AddColorPicker(options)
+                options = options or {}
+                local row = makeRow("ColorPickerRow", 46)
+                addTitle(row, options.Name or "Accent color", options.Description)
+                local initial = options.Default or Color3.fromRGB(120, 170, 230)
+                local swatch = create("TextButton", {
+                    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -9, 0.5, 0),
+                    Size = UDim2.fromOffset(34, 24), BackgroundColor3 = initial,
+                    Text = "", AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 9,
+                }, row)
+                addCorner(swatch, 7)
+                local control = {Frame = row}
+                local color = initial
+                swatch.Activated:Connect(function()
+                    -- A compact deterministic palette; callers can also SetColor() programmatically.
+                    local palette = options.Palette or {
+                        Color3.fromRGB(120,170,230), Color3.fromRGB(145,205,175),
+                        Color3.fromRGB(220,160,130), Color3.fromRGB(190,155,225),
+                        Color3.fromRGB(235,205,125), Color3.fromRGB(230,230,235),
+                    }
+                    local index = 1
+                    for i, candidate in ipairs(palette) do
+                        if candidate == color then index = i end
+                    end
+                    color = palette[index % #palette + 1]
+                    swatch.BackgroundColor3 = color
+                    safeCallback(options.Callback, color)
+                end)
+                function control:SetColor(value, fireCallback)
+                    assert(typeof(value) == "Color3", "SetColor expects Color3")
+                    color = value
+                    swatch.BackgroundColor3 = color
+                    if fireCallback ~= false then safeCallback(options.Callback, color) end
+                end
+                function control:GetColor() return color end
+                function control:Destroy() row:Destroy() end
+                return control
+            end
+
+            function section:AddAccordion(options)
+                options = options or {}
+                local row = makeRow("AccordionRow", options.Height or 38)
+                row.AutomaticSize = Enum.AutomaticSize.Y
+                local headerButton = create("TextButton", {
+                    Size = UDim2.new(1, 0, 0, 36), BackgroundTransparency = 1,
+                    Text = tostring(options.Title or "Details") .. "   +",
+                    TextColor3 = (window._theme or theme).Text, TextSize = 9,
+                    Font = Enum.Font.GothamSemibold, TextXAlignment = Enum.TextXAlignment.Left,
+                    AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 9,
+                }, row)
+                local content = makeLabel(row, options.Content or "", 8, (window._theme or theme).Secondary, false)
+                content.Position = UDim2.fromOffset(9, 39)
+                content.Size = UDim2.new(1, -18, 0, 0)
+                content.AutomaticSize = Enum.AutomaticSize.Y
+                content.TextWrapped = true
+                content.TextYAlignment = Enum.TextYAlignment.Top
+                content.Visible = false
+                local open = false
+                headerButton.Activated:Connect(function()
+                    open = not open
+                    content.Visible = open
+                    headerButton.Text = tostring(options.Title or "Details") .. (open and "   −" or "   +")
+                    row.Size = UDim2.new(1, 0, 0, open and 62 or 38)
+                end)
+                local control = {Frame = row}
+                function control:SetOpen(value)
+                    open = value == true
+                    content.Visible = open
+                    headerButton.Text = tostring(options.Title or "Details") .. (open and "   −" or "   +")
+                    row.Size = UDim2.new(1, 0, 0, open and 62 or 38)
+                end
+                function control:Destroy() row:Destroy() end
+                return control
+            end
+
+            function section:AddCodeBlock(options)
+                options = options or {}
+                local code = tostring(options.Code or "")
+                local lines = math.clamp(select(2, code:gsub("\n", "\n")) + 1, 2, 12)
+                local row = makeRow("CodeBlockRow", 28 + lines * 13)
+                local label = makeLabel(row, options.Title or "CODE", 7, (window._theme or theme).Muted, true)
+                label.Position = UDim2.fromOffset(9, 5)
+                label.Size = UDim2.new(1, -18, 0, 12)
+                local body = create("TextBox", {
+                    Position = UDim2.fromOffset(8, 20), Size = UDim2.new(1, -16, 1, -25),
+                    BackgroundColor3 = (window._theme or theme).Field, BackgroundTransparency = 0.12,
+                    Text = code, TextColor3 = (window._theme or theme).Text, TextSize = 8,
+                    Font = Enum.Font.Code, TextXAlignment = Enum.TextXAlignment.Left,
+                    TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = false,
+                    ClearTextOnFocus = false, MultiLine = true, TextEditable = false,
+                    BorderSizePixel = 0, ZIndex = 8,
+                }, row)
+                addCorner(body, 6)
+                create("UIPadding", {PaddingTop = UDim.new(0, 6), PaddingLeft = UDim.new(0, 7)}, body)
+                local control = {Frame = row, TextBox = body}
+                function control:SetCode(value) body.Text = tostring(value or "") end
+                function control:GetCode() return body.Text end
+                function control:Destroy() row:Destroy() end
+                return control
+            end
+
+            function section:AddConsole(options)
+                options = options or {}
+                local row = makeRow("ConsoleRow", options.Height or 118)
+                local output = create("TextBox", {
+                    Position = UDim2.fromOffset(7, 7), Size = UDim2.new(1, -14, 1, -14),
+                    BackgroundColor3 = (window._theme or theme).Field, BackgroundTransparency = 0.12,
+                    Text = tostring(options.Default or "Console ready."), TextColor3 = (window._theme or theme).Secondary,
+                    TextSize = 8, Font = Enum.Font.Code, TextXAlignment = Enum.TextXAlignment.Left,
+                    TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = false,
+                    ClearTextOnFocus = false, MultiLine = true, TextEditable = false,
+                    BorderSizePixel = 0, ZIndex = 8,
+                }, row)
+                addCorner(output, 6)
+                create("UIPadding", {PaddingTop = UDim.new(0, 6), PaddingLeft = UDim.new(0, 7)}, output)
+                local lines = {}
+                local control = {Frame = row, TextBox = output}
+                function control:Write(message)
+                    table.insert(lines, tostring(message))
+                    while #lines > (options.MaxLines or 80) do table.remove(lines, 1) end
+                    output.Text = table.concat(lines, "\n")
+                end
+                function control:Clear()
+                    table.clear(lines)
+                    output.Text = ""
+                end
+                function control:GetText() return output.Text end
+                function control:Destroy() row:Destroy() end
+                if options.Default then table.insert(lines, tostring(options.Default)) end
+                return control
+            end
+
+            function section:AddStatCard(options)
+                options = options or {}
+                local row = makeRow("StatCardRow", options.Height or 58)
+                local title = makeLabel(row, options.Name or "Metric", 8, (window._theme or theme).Secondary, true)
+                title.Position = UDim2.fromOffset(9, 7)
+                title.Size = UDim2.new(1, -18, 0, 13)
+                local value = makeLabel(row, tostring(options.Value or "—"), 16, (window._theme or theme).Text, true)
+                value.Position = UDim2.fromOffset(9, 23)
+                value.Size = UDim2.new(1, -18, 0, 25)
+                local control = {Frame = row}
+                function control:SetValue(nextValue) value.Text = tostring(nextValue) end
+                function control:GetValue() return value.Text end
+                function control:Destroy() row:Destroy() end
+                return control
+            end
+
+            return section
+        end
+        return tab
+    end
+
+    return window
+end
+
+-- Wrap CreateWindow once so every window receives the extension API.
+local originalCreateWindow = GlassUI.CreateWindow
+function GlassUI:CreateWindow(options)
+    local window = originalCreateWindow(self, options)
+    return attachExtensions(window, window._theme)
 end
 
 return GlassUI

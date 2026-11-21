@@ -1,0 +1,7 @@
+GlassUI 2.0 complete source package
+
+GlassUI.lua              Main library
+GlassStudio_Showcase.lua Interactive showcase LocalScript
+README.md                Installation and API reference
+CHANGELOG.md             Release notes
+LICENSE.txt              MIT license
